@@ -1,6 +1,6 @@
 name: "HARelay"
 description: "Secure remote access to Home Assistant via HARelay"
-version: "1.5.5"
+version: "1.5.6"
 slug: "harelay"
 url: "https://harelay.com"
 
@@ -15,6 +15,7 @@ arch:
 
 startup: application
 homeassistant_api: true
+hassio_api: true
 auth_api: true
 
 # Enable web UI panel
@@ -28,3 +29,5 @@ options:
 
 schema:
   log_level: "list(debug|info|warning|error)"
+  ha_port: "port?"
+  ha_ssl: "bool?"

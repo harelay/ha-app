@@ -51,10 +51,15 @@ ha-app/
 
 No configuration needed! Just start the app and follow the pairing instructions.
 
-**Optional setting:**
+The app asks the Supervisor which port Home Assistant listens on and whether SSL is enabled
+(`server_port` / `ssl_certificate` in the `http:` integration), so custom ports and HTTPS work out of the box.
+
+**Optional settings:**
 | Option | Description | Default |
 |--------|-------------|---------|
 | `log_level` | Logging verbosity | `info` |
+| `ha_port` | Override the detected Home Assistant port | auto-detected (`8123` fallback) |
+| `ha_ssl` | Override whether Home Assistant uses HTTPS | auto-detected (`false` fallback) |
 
 ## How It Works
 
@@ -86,6 +91,10 @@ Click "Get New Code" or restart the app to generate a fresh pairing code.
 
 ### Connection keeps disconnecting
 Check your network connection and ensure the HARelay server is accessible.
+
+### Home Assistant not reachable
+The app logs the address it uses on startup (`Home Assistant at http://127.0.0.1:8123`). If detection
+picks the wrong port or protocol, set `ha_port` / `ha_ssl` in the app configuration and restart the app.
 
 ### Relink device
 Open the app web UI and click "Relink Device" to start fresh.

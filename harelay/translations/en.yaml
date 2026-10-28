@@ -1,0 +1,10 @@
+configuration:
+  log_level:
+    name: Log level
+    description: Logging verbosity.
+  ha_port:
+    name: Home Assistant port
+    description: Leave empty to auto-detect. Only set this if Home Assistant isn't reachable on the detected port.
+  ha_ssl:
+    name: Home Assistant uses HTTPS
+    description: Leave empty to auto-detect. Enable if Home Assistant serves its own SSL certificate.

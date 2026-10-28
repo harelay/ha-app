@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import signal
+import ssl
 import sys
 import time
 from collections import OrderedDict
@@ -72,9 +73,10 @@ def extract_response_headers(resp) -> dict:
             headers[key] = value
     return headers
 
-# Home Assistant URLs
-HA_HTTP_URL = 'http://127.0.0.1:8123'
-HA_WS_URL = 'ws://127.0.0.1:8123'
+# Home Assistant defaults (used when Supervisor detection fails)
+HA_HOST = '127.0.0.1'
+HA_DEFAULT_PORT = 8123
+SUPERVISOR_URL = 'http://supervisor'
 
 # Template directory
 TEMPLATE_DIR = Path(__file__).parent / 'templates'
@@ -98,6 +100,39 @@ async def load_template(name: str) -> str:
 
 
 CREDENTIALS_FILE = Path('/data/credentials.json')
+
+
+async def detect_ha_endpoint(config: dict, supervisor_token: str | None) -> tuple[int, bool]:
+    """
+    Determine Home Assistant's port and SSL setting.
+    Options (ha_port / ha_ssl) override, otherwise ask the Supervisor, otherwise defaults.
+    """
+    port = HA_DEFAULT_PORT
+    use_ssl = False
+
+    if supervisor_token:
+        try:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    f'{SUPERVISOR_URL}/core/info',
+                    headers={'Authorization': f'Bearer {supervisor_token}'},
+                ) as resp:
+                    data = (await resp.json()).get('data', {})
+                    if resp.status == 200 and data.get('port'):
+                        port = int(data['port'])
+                        use_ssl = bool(data.get('ssl', False))
+                    else:
+                        logger.warning(f'Supervisor core info unavailable (HTTP {resp.status}), using defaults')
+        except Exception as e:
+            logger.warning(f'Failed to detect Home Assistant port via Supervisor: {e}')
+
+    if config.get('ha_port'):
+        port = int(config['ha_port'])
+    if config.get('ha_ssl') is not None:
+        use_ssl = bool(config['ha_ssl'])
+
+    return port, use_ssl
 
 
 class HARelayAddon:
@@ -405,11 +440,16 @@ class HARelayAddon:
         self.status = 'connecting'
 
         while self.running and self.is_configured:
+            ha_port, ha_ssl = await detect_ha_endpoint(self.config, self.supervisor_token)
+            logger.info(f'Home Assistant at {"https" if ha_ssl else "http"}://{HA_HOST}:{ha_port}')
+
             tunnel = TunnelClient(
                 subdomain=self.subdomain,
                 token=self.token,
                 supervisor_token=self.supervisor_token,
-                on_subdomain_changed=self._on_subdomain_changed
+                on_subdomain_changed=self._on_subdomain_changed,
+                ha_port=ha_port,
+                ha_ssl=ha_ssl,
             )
 
             try:
@@ -535,8 +575,17 @@ class TunnelClient:
     CACHE_MAX_SIZE = 100 * 1024 * 1024  # 100MB max cache size
     CACHE_PATHS = ('/frontend_latest/', '/static/', '/hacsfiles/')
 
-    def __init__(self, subdomain: str, token: str, supervisor_token: str = None, on_subdomain_changed: callable = None):
+    def __init__(self, subdomain: str, token: str, supervisor_token: str = None, on_subdomain_changed: callable = None,
+                 ha_port: int = HA_DEFAULT_PORT, ha_ssl: bool = False):
         self.subdomain = subdomain
+        self.ha_http_url = f'{"https" if ha_ssl else "http"}://{HA_HOST}:{ha_port}'
+        self.ha_ws_url = f'{"wss" if ha_ssl else "ws"}://{HA_HOST}:{ha_port}'
+        # HA's certificate is issued for its public hostname, not 127.0.0.1, so skip verification
+        self.ha_ssl_context: ssl.SSLContext | None = None
+        if ha_ssl:
+            self.ha_ssl_context = ssl.create_default_context()
+            self.ha_ssl_context.check_hostname = False
+            self.ha_ssl_context.verify_mode = ssl.CERT_NONE
         self.token = token
         self.supervisor_token = supervisor_token
         self.on_subdomain_changed = on_subdomain_changed
@@ -634,6 +683,7 @@ class TunnelClient:
         self.http_connector = aiohttp.TCPConnector(
             limit=100,
             limit_per_host=100,
+            ssl=self.ha_ssl_context if self.ha_ssl_context else True,
         )
         self.last_server_response = time.time()
         self._shutdown_event.clear()
@@ -766,7 +816,7 @@ class TunnelClient:
         if body and not isinstance(body, bytes):
             body = body.encode() if isinstance(body, str) else bytes(body)
 
-        url = urljoin(HA_HTTP_URL, uri)
+        url = urljoin(self.ha_http_url, uri)
         skip_headers = {'host', 'content-length', 'transfer-encoding', 'accept-encoding'}
         filtered_headers = {k: v for k, v in headers.items() if k.lower() not in skip_headers}
 
@@ -900,7 +950,8 @@ class TunnelClient:
 
                 ws_headers = [('Cookie', f'ingress_session={ingress_session}')]
                 ha_ws = await websockets.connect(
-                    f'{HA_WS_URL}{path}',
+                    f'{self.ha_ws_url}{path}',
+                    ssl=self.ha_ssl_context,
                     additional_headers=ws_headers,
                     extensions=[PermissiveDeflateFactory()],
                     max_size=32 * 1024 * 1024,
@@ -908,7 +959,8 @@ class TunnelClient:
                 logger.info(f'WS CONNECTED {path} (ingress)')
             else:
                 ha_ws = await websockets.connect(
-                    f'{HA_WS_URL}{path}',
+                    f'{self.ha_ws_url}{path}',
+                    ssl=self.ha_ssl_context,
                     ping_interval=20,
                     ping_timeout=10,
                     max_size=32 * 1024 * 1024,
